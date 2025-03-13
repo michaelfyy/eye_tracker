@@ -1,0 +1,27 @@
+data:
+  dataset: "ue2" # Valid options: "syntheseyes", "ue2", "ue2_separate", "dummy"
+  data_dir: "C:/Users/michaelfeng/Documents/IML/data/10k_multiviewEER/imgs"
+  train_split: 0.75
+  video_root: "C:/Users/michaelfeng/Documents/IML/data/EyeVideos"
+  annotations_folder: "annotations"
+
+model: "efficientnet"
+
+training:
+  batch_size: 8
+  num_workers: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_epochs: 100
+  from_checkpoint: false
+  checkpoint_path: ""
+
+loss:
+  pupil: "mse" # Options: "mse", "smooth_l1"
+
+logging:
+  run_dir: "runs"
+
+testing:
+  checkpoint: "latest"
+  frame_rate: 30
