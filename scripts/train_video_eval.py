@@ -20,7 +20,7 @@ from utils.logger import Logger
 from models import get_model
 from losses.losses import get_loss
 from metrics.metrics import compute_pixel_error  # used for training statistics
-# New: Import video evaluation helpers.
+# Import video evaluation helpers.
 from utils.video_helper import extract_frames, parse_annotations
 from datasets.transforms import inverse_transform_2d
 import torchvision.transforms.v2 as transforms
@@ -39,7 +39,8 @@ def preprocess_frame(frame):
     preprocess = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToImage(),
-        transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
     ])
     processed_frame = preprocess(frame_tensor)
     return processed_frame, orig_size
@@ -52,6 +53,13 @@ def get_camera_id_from_video(video_path):
     return None
 
 def evaluate_on_eye_videos(model, config, camera_filter=None):
+    """
+    Evaluates the current model on the actual eye videos.
+    For each video in config['data']['video_root'] (optionally filtered by camera),
+    the corresponding annotation file (from config['data']['annotations_folder']) is loaded.
+    Only frames with index >= 160 and with a ground truth annotation (i.e. where the eye is visible)
+    are considered. Returns the overall mean pixel error.
+    """
     video_root = config['data']['video_root']
     annotations_folder = config['data']['annotations_folder']
     video_files = glob.glob(os.path.join(video_root, "*.mp4"))
@@ -103,13 +111,14 @@ def train():
     run_timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
     early_stop_patience = config['training'].get('early_stop', 5)
     
+    # In train_video_eval.py, we use video evaluation (ignoring the validation loader) for all datasets.
     if config['data']['dataset'] == "ue2_separate":
-        dataloaders_dict = load_data(config)
+        dataloaders_dict = load_data(config)  # only used for training loader
         for cam, loaders in dataloaders_dict.items():
             run_dir = os.path.join(config['logging']['run_dir'], f"run_{run_timestamp}_{cam}")
             os.makedirs(run_dir, exist_ok=True)
             logger = Logger(run_dir, config)
-            logger.log({"message": f"Training model for camera {cam}"})
+            logger.log({"message": f"Training (video eval) model for camera {cam}"})
             
             model = get_model(config).to(device)
             if config['training'].get('from_checkpoint', False):
@@ -206,6 +215,8 @@ def train():
             logger.log({"best video mean pixel error": f"{best_video_error:.6f}"})
             
     else:
+        # For syntheseyes and ue2_combined (or any dataset not ue2_separate), use the training loader for training
+        # and video evaluation for evaluation.
         dataloaders = load_data(config)
         run_dir = os.path.join(config['logging']['run_dir'], f"run_{run_timestamp}")
         os.makedirs(run_dir, exist_ok=True)
@@ -227,15 +238,14 @@ def train():
             lr=config['training']['learning_rate'],
             weight_decay=config['training']['weight_decay']
         )
-        best_val_loss = float('inf')
+        best_video_error = float('inf')
         best_epoch_metrics = None
-        metrics = {"epoch": [], "train_loss": [], "train_pixel_error": [], "val_loss": [], "val_pixel_error": []}
+        metrics = {"epoch": [], "train_loss": []}
         no_improvement_count = 0
         num_epochs = config['training']['num_epochs']
         for epoch in range(num_epochs):
             model.train()
             train_running_loss = 0.0
-            train_running_pixel_error = 0.0
             train_samples = 0
             for batch in dataloaders['train']:
                 images = batch['image'].to(device)
@@ -248,55 +258,26 @@ def train():
                 optimizer.step()
                 batch_size = images.size(0)
                 train_running_loss += loss.item() * batch_size
-                batch_pixel_error = compute_pixel_error(outputs['pupil'], pupil_labels, orig_sizes)
-                train_running_pixel_error += batch_pixel_error * batch_size
                 train_samples += batch_size
             train_loss = train_running_loss / train_samples
-            train_pixel_error = train_running_pixel_error / train_samples
             metrics['epoch'].append(epoch + 1)
             metrics['train_loss'].append(train_loss)
-            metrics['train_pixel_error'].append(train_pixel_error)
+            logger.log({"epoch": epoch+1, "train_loss": train_loss})
+            print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.6f}")
+            
             model.eval()
-            val_running_loss = 0.0
-            val_running_pixel_error = 0.0
-            val_samples = 0
-            with torch.no_grad():
-                for batch in dataloaders['val']:
-                    images = batch['image'].to(device)
-                    pupil_labels = batch['pupil'].to(device)
-                    orig_sizes = batch['orig_size']
-                    outputs = model(images)
-                    loss = criterion_pupil(outputs['pupil'], pupil_labels)
-                    batch_pixel_error = compute_pixel_error(outputs['pupil'], pupil_labels, orig_sizes)
-                    batch_size = images.size(0)
-                    val_running_loss += loss.item() * batch_size
-                    val_running_pixel_error += batch_pixel_error * batch_size
-                    val_samples += batch_size
-            val_loss = val_running_loss / val_samples
-            val_pixel_error = val_running_pixel_error / val_samples
-            metrics['val_loss'].append(val_loss)
-            metrics['val_pixel_error'].append(val_pixel_error)
-            logger.log({
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_pixel_error": train_pixel_error,
-                "val_loss": val_loss,
-                "val_pixel_error": val_pixel_error
-            })
-            print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.6f}, Pixel Err: {train_pixel_error:.6f} | Val Loss: {val_loss:.6f}, Pixel Err: {val_pixel_error:.6f}")
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_epoch_metrics = {
-                    "epoch": epoch + 1,
-                    "train_loss": train_loss,
-                    "train_pixel_error": train_pixel_error,
-                    "val_loss": val_loss,
-                    "val_pixel_error": val_pixel_error
-                }
+            # Video evaluation for all datasets.
+            video_error = evaluate_on_eye_videos(model, config)
+            logger.log({"epoch": epoch+1, "video_mean_pixel_error": video_error})
+            print(f"Epoch {epoch+1} - Video Mean Pixel Error (frames>=160 & visible): {video_error:.6f}")
+            
+            if video_error < best_video_error:
+                best_video_error = video_error
+                best_epoch_metrics = {"epoch": epoch+1, "train_loss": train_loss, "video_mean_pixel_error": video_error}
                 no_improvement_count = 0
                 checkpoint_path = os.path.join(run_dir, "best_model.pt")
                 torch.save(model.state_dict(), checkpoint_path)
-                logger.log({"message": "Best model saved based on validation evaluation", "epoch": epoch+1, "val_loss": val_loss})
+                logger.log({"message": "Best model saved based on video evaluation", "epoch": epoch+1, "video_mean_pixel_error": video_error})
                 common_ckpt = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}.pt")
                 shutil.copy(checkpoint_path, common_ckpt)
             else:
@@ -310,25 +291,16 @@ def train():
                 json.dump(metrics, f, indent=4)
             plt.figure()
             plt.plot(metrics['epoch'], metrics['train_loss'], label='Train Loss')
-            plt.plot(metrics['epoch'], metrics['val_loss'], label='Val Loss')
             plt.xlabel("Epoch")
             plt.ylabel("Loss")
-            plt.title("Training and Validation Loss")
+            plt.title("Training Loss")
             plt.legend()
             plt.savefig(os.path.join(run_dir, "loss_plot.png"))
             plt.close()
-            plt.figure()
-            plt.plot(metrics['epoch'], metrics['train_pixel_error'], label='Train Pixel Error')
-            plt.plot(metrics['epoch'], metrics['val_pixel_error'], label='Val Pixel Error')
-            plt.xlabel("Epoch")
-            plt.ylabel("Pixel Error")
-            plt.title("Training and Validation Pixel Error")
-            plt.legend()
-            plt.savefig(os.path.join(run_dir, "pixel_error_plot.png"))
-            plt.close()
-        logger.log({"Best Epoch Metrics (lowest validation loss)": best_epoch_metrics})
-        print("Training complete. Best Epoch: {}, Best Validation Loss: {:.6f}".format(best_epoch_metrics["epoch"], best_val_loss))
-        logger.log({"best validation loss": f"{best_val_loss:.6f}"})
+            
+        logger.log({"Best Epoch Metrics (lowest video mean pixel error)": best_epoch_metrics})
+        print("Training complete. Best Epoch: {}, Best Video Mean Pixel Error: {:.6f}".format(best_epoch_metrics["epoch"], best_video_error))
+        logger.log({"best video mean pixel error": f"{best_video_error:.6f}"})
 
 if __name__ == "__main__":
     train()
