@@ -13,6 +13,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   num_epochs: 100
+  early_stop: 5
   from_checkpoint: false
   checkpoint_path: ""
 

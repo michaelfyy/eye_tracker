@@ -26,10 +26,11 @@ def train():
     config = parse_args()
     run_timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
     
+    # Early stopping parameters:
+    early_stop_patience = config['training'].get('early_stop', 5)
+    
     if config['data']['dataset'] == "ue2_separate":
-        # Load data: returns a dictionary of dataloaders keyed by camera id.
         dataloaders_dict = load_data(config)
-        # For each camera, run a separate training loop.
         for cam, loaders in dataloaders_dict.items():
             run_dir = os.path.join(config['logging']['run_dir'], f"run_{run_timestamp}_{cam}")
             os.makedirs(run_dir, exist_ok=True)
@@ -38,11 +39,23 @@ def train():
             
             model = get_model(config).to(device)
             if config['training'].get('from_checkpoint', False):
-                checkpoint_path = config['training'].get('checkpoint_path', None)
-                if not checkpoint_path or not os.path.exists(checkpoint_path):
-                    raise ValueError("from_checkpoint is True but checkpoint_path is not provided or does not exist.")
-                model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-                logger.log({"message": f"Loaded model weights from checkpoint: {checkpoint_path}"})
+                # Use individual checkpoint for this camera.
+                if cam == "cam_1":
+                    cp = config['training'].get('checkpoint_cam_1', None)
+                elif cam == "cam_2":
+                    cp = config['training'].get('checkpoint_cam_2', None)
+                elif cam == "cam_3":
+                    cp = config['training'].get('checkpoint_cam_3', None)
+                elif cam == "cam_4":
+                    cp = config['training'].get('checkpoint_cam_4', None)
+                else:
+                    cp = None
+                if cp == "latest":
+                    cp = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}_{cam}.pt")
+                if not cp or not os.path.exists(cp):
+                    raise ValueError(f"from_checkpoint is True but checkpoint for {cam} is not provided or does not exist.")
+                model.load_state_dict(torch.load(cp, map_location=device))
+                logger.log({"message": f"Loaded model weights from checkpoint for {cam}: {cp}"})
             logger.log({"message": f"Model {config['model']} loaded for camera {cam}."})
             
             criterion_pupil = get_loss(config['loss']['pupil'], 'pupil')
@@ -55,6 +68,7 @@ def train():
             best_val_loss = float('inf')
             best_epoch_metrics = None
             metrics = {"epoch": [], "train_loss": [], "train_pixel_error": [], "val_loss": [], "val_pixel_error": []}
+            no_improvement_count = 0
             num_epochs = config['training']['num_epochs']
             
             for epoch in range(num_epochs):
@@ -69,8 +83,7 @@ def train():
                     
                     optimizer.zero_grad()
                     outputs = model(images)
-                    loss_pupil = criterion_pupil(outputs['pupil'], pupil_labels)
-                    loss = loss_pupil
+                    loss = criterion_pupil(outputs['pupil'], pupil_labels)
                     loss.backward()
                     optimizer.step()
                     
@@ -79,7 +92,6 @@ def train():
                     batch_pixel_error = compute_pixel_error(outputs['pupil'], pupil_labels, orig_sizes)
                     train_running_pixel_error += batch_pixel_error * batch_size
                     train_samples += batch_size
-                
                 train_loss = train_running_loss / train_samples
                 train_pixel_error = train_running_pixel_error / train_samples
                 
@@ -93,8 +105,7 @@ def train():
                         pupil_labels = batch['pupil'].to(device)
                         orig_sizes = batch['orig_size'].to(device)
                         outputs = model(images)
-                        loss_pupil = criterion_pupil(outputs['pupil'], pupil_labels)
-                        loss = loss_pupil
+                        loss = criterion_pupil(outputs['pupil'], pupil_labels)
                         batch_pixel_error = compute_pixel_error(outputs['pupil'], pupil_labels, orig_sizes)
                         batch_size = images.size(0)
                         val_running_loss += loss.item() * batch_size
@@ -117,6 +128,7 @@ def train():
                 })
                 print(f"Camera {cam} | Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.6f}, Pixel Err: {train_pixel_error:.6f} | Val Loss: {val_loss:.6f}, Pixel Err: {val_pixel_error:.6f}")
                 
+                # Early stopping check on validation loss.
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_epoch_metrics = {
@@ -126,12 +138,19 @@ def train():
                         "val_loss": val_loss,
                         "val_pixel_error": val_pixel_error
                     }
+                    no_improvement_count = 0
                     checkpoint_path = os.path.join(run_dir, "best_model.pt")
                     torch.save(model.state_dict(), checkpoint_path)
                     logger.log({"message": "Best model saved", "epoch": epoch + 1, "val_loss": val_loss})
                     common_ckpt = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}_{cam}.pt")
                     shutil.copy(checkpoint_path, common_ckpt)
-            
+                else:
+                    no_improvement_count += 1
+                    if no_improvement_count >= early_stop_patience:
+                        print(f"Early stopping triggered for camera {cam} at epoch {epoch+1}")
+                        logger.log({"message": f"Early stopping triggered for camera {cam} at epoch {epoch+1}"})
+                        break
+                        
                 with open(os.path.join(run_dir, "metrics.json"), "w") as f:
                     json.dump(metrics, f, indent=4)
                 plt.figure()
@@ -153,22 +172,25 @@ def train():
                 plt.savefig(os.path.join(run_dir, "pixel_error_plot.png"))
                 plt.close()
             
-            logger.log({"Best Epoch Metrics (lowest overall val_loss) for " + cam: best_epoch_metrics})
-            print(f"Camera {cam} training complete. Best Overall Validation Loss: {best_val_loss:.6f}")
+            logger.log({"Best Epoch Metrics for " + cam: best_epoch_metrics})
+            print(f"Camera {cam} training complete. Best Epoch: {best_epoch_metrics['epoch']}, Best Val Loss: {best_val_loss:.6f}")
             logger.log({"best validation loss": f"{best_val_loss:.6f}"})
+            
     else:
-        # Existing behavior for other datasets.
+        # For syntheseyes and ue2 (combined), use a single dataloader.
         dataloaders = load_data(config)
         run_dir = os.path.join(config['logging']['run_dir'], f"run_{run_timestamp}")
         os.makedirs(run_dir, exist_ok=True)
         logger = Logger(run_dir, config)
         model = get_model(config).to(device)
         if config['training'].get('from_checkpoint', False):
-            checkpoint_path = config['training'].get('checkpoint_path', None)
-            if not checkpoint_path or not os.path.exists(checkpoint_path):
+            cp = config['training'].get('checkpoint_path', None)
+            if cp == "latest":
+                cp = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}.pt")
+            if not cp or not os.path.exists(cp):
                 raise ValueError("from_checkpoint is True but checkpoint_path is not provided or does not exist.")
-            model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-            logger.log({"message": f"Loaded model weights from checkpoint: {checkpoint_path}"})
+            model.load_state_dict(torch.load(cp, map_location=device))
+            logger.log({"message": f"Loaded model weights from checkpoint: {cp}"})
         logger.log({"message": f"Model {config['model']} loaded."})
         print(f"Using device: {device}")
         criterion_pupil = get_loss(config['loss']['pupil'], 'pupil')
@@ -180,6 +202,7 @@ def train():
         best_val_loss = float('inf')
         best_epoch_metrics = None
         metrics = {"epoch": [], "train_loss": [], "train_pixel_error": [], "val_loss": [], "val_pixel_error": []}
+        no_improvement_count = 0
         num_epochs = config['training']['num_epochs']
         for epoch in range(num_epochs):
             model.train()
@@ -192,8 +215,7 @@ def train():
                 orig_sizes = batch['orig_size'].to(device)
                 optimizer.zero_grad()
                 outputs = model(images)
-                loss_pupil = criterion_pupil(outputs['pupil'], pupil_labels)
-                loss = loss_pupil
+                loss = criterion_pupil(outputs['pupil'], pupil_labels)
                 loss.backward()
                 optimizer.step()
                 batch_size = images.size(0)
@@ -213,8 +235,7 @@ def train():
                     pupil_labels = batch['pupil'].to(device)
                     orig_sizes = batch['orig_size']
                     outputs = model(images)
-                    loss_pupil = criterion_pupil(outputs['pupil'], pupil_labels)
-                    loss = loss_pupil
+                    loss = criterion_pupil(outputs['pupil'], pupil_labels)
                     batch_pixel_error = compute_pixel_error(outputs['pupil'], pupil_labels, orig_sizes)
                     batch_size = images.size(0)
                     val_running_loss += loss.item() * batch_size
@@ -244,11 +265,19 @@ def train():
                     "val_loss": val_loss,
                     "val_pixel_error": val_pixel_error
                 }
+                no_improvement_count = 0
                 checkpoint_path = os.path.join(run_dir, "best_model.pt")
                 torch.save(model.state_dict(), checkpoint_path)
-                logger.log({"message": "Best model saved", "epoch": epoch + 1, "val_loss": val_loss})
+                logger.log({"message": "Best model saved based on validation evaluation", "epoch": epoch+1, "val_loss": val_loss})
                 common_ckpt = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}.pt")
                 shutil.copy(checkpoint_path, common_ckpt)
+            else:
+                no_improvement_count += 1
+                if no_improvement_count >= early_stop_patience:
+                    print(f"Early stopping triggered at epoch {epoch+1}")
+                    logger.log({"message": f"Early stopping triggered at epoch {epoch+1}"})
+                    break
+            
             with open(os.path.join(run_dir, "metrics.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
             plt.figure()
@@ -269,8 +298,8 @@ def train():
             plt.legend()
             plt.savefig(os.path.join(run_dir, "pixel_error_plot.png"))
             plt.close()
-        logger.log({"Best Epoch Metrics (lowest overall val_loss)": best_epoch_metrics})
-        print("Training complete. Best Overall Validation Loss: {:.6f}".format(best_val_loss))
+        logger.log({"Best Epoch Metrics (lowest validation loss)": best_epoch_metrics})
+        print("Training complete. Best Epoch: {}, Best Validation Loss: {:.6f}".format(best_epoch_metrics["epoch"], best_val_loss))
         logger.log({"best validation loss": f"{best_val_loss:.6f}"})
 
 if __name__ == "__main__":

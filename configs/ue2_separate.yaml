@@ -13,8 +13,13 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   num_epochs: 100
+  early_stop: 5
   from_checkpoint: false
   checkpoint_path: ""
+  checkpoint_cam_1: ""
+  checkpoint_cam_2: ""
+  checkpoint_cam_3: ""
+  checkpoint_cam_4: ""
 
 loss:
   pupil: "mse" # Options: "mse", "smooth_l1"
