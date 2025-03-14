@@ -83,6 +83,7 @@ class UE2Dataset(Dataset):
         iris_landmarks = torch.tensor(iris_landmarks, dtype=torch.float)  # shape (N, 3)
         # Truncate the last coordinate, keeping only x and y.
         iris_landmarks = iris_landmarks[:, :2]  # shape (N, 2)
+        iris_landmarks = 480 - iris_landmarks[:, :2] #* Flip y-coordinate to match conventions
         # Compute the pupil center as the centroid of the iris landmarks.
         pupil_center = iris_landmarks.mean(dim=0)
         # Adjust pupil center coordinates according to the resize transformation.
