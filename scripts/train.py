@@ -54,7 +54,7 @@ def train():
                     cp = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}_{cam}.pt")
                 if not cp or not os.path.exists(cp):
                     raise ValueError(f"from_checkpoint is True but checkpoint for {cam} is not provided or does not exist.")
-                model.load_state_dict(torch.load(cp, map_location=device))
+                model.load_state_dict(torch.load(cp, map_location=device, weights_only=True))
                 logger.log({"message": f"Loaded model weights from checkpoint for {cam}: {cp}"})
             logger.log({"message": f"Model {config['model']} loaded for camera {cam}."})
             
@@ -189,7 +189,7 @@ def train():
                 cp = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}.pt")
             if not cp or not os.path.exists(cp):
                 raise ValueError("from_checkpoint is True but checkpoint_path is not provided or does not exist.")
-            model.load_state_dict(torch.load(cp, map_location=device))
+            model.load_state_dict(torch.load(cp, map_location=device, weights_only=True))
             logger.log({"message": f"Loaded model weights from checkpoint: {cp}"})
         logger.log({"message": f"Model {config['model']} loaded."})
         print(f"Using device: {device}")

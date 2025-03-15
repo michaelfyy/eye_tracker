@@ -1,7 +1,7 @@
 data:
-  dataset: "syntheseyes" # Valid options: "syntheseyes", "ue2", "ue2_separate", "dummy"
+  dataset: "syntheseyes" # Valid options: "syntheseyes", "ue2", "ue2_separate", "ue1", "dummy"
   data_dir: "C:/Users/michaelfeng/Documents/IML/data/SynthEyes_data"
-  train_split: 0.75
+  train_split: 0.99
   video_root: "C:/Users/michaelfeng/Documents/IML/data/EyeVideos"
   annotations_folder: "annotations"
 
@@ -12,8 +12,8 @@ training:
   num_workers: 4
   learning_rate: 0.001
   weight_decay: 0.0001
-  num_epochs: 100
-  early_stop: 5
+  num_epochs: 50
+  early_stop: 10
   from_checkpoint: false
   checkpoint_path: ""
 

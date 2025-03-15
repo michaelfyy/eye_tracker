@@ -1,6 +1,6 @@
 data:
-  dataset: "ue2_separate" # Valid options: "syntheseyes", "ue2", "ue2_separate", "ue1", "dummy"
-  data_dir: "C:/Users/michaelfeng/Documents/IML/data/10k_multiviewEER/imgs"
+  dataset: "ue2" # Valid options: "syntheseyes", "ue2", "ue2_separate", "ue1", "dummy"
+  data_dir: "C:/Users/michaelfeng/Documents/IML/data/unityeyes1/imgs"
   train_split: 0.99
   video_root: "C:/Users/michaelfeng/Documents/IML/data/EyeVideos"
   annotations_folder: "annotations"
@@ -16,10 +16,6 @@ training:
   early_stop: 10
   from_checkpoint: false
   checkpoint_path: ""
-  checkpoint_cam_1: ""
-  checkpoint_cam_2: ""
-  checkpoint_cam_3: ""
-  checkpoint_cam_4: ""
 
 loss:
   pupil: "mse" # Options: "mse", "smooth_l1"

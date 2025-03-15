@@ -94,7 +94,27 @@ def load_data(config):
                 'val': DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
             }
         return dataloaders_dict
-
+    elif config['data']['dataset'] == "ue1":
+        data_dir = config['data']['data_dir']
+        image_files = []
+        for f in os.listdir(data_dir):
+            if f.lower().endswith('.jpg'):
+                image_files.append(os.path.join(data_dir, f))
+        # Sort images by frame number (filename without extension)
+        image_files = sorted(image_files, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+        json_files = [os.path.join(data_dir, f"{os.path.splitext(os.path.basename(x))[0]}.json") for x in image_files]
+        for jf in json_files:
+            if not os.path.exists(jf):
+                raise FileNotFoundError(f"Expected JSON file {jf} not found in {data_dir}")
+        x_train, x_val, y_train, y_val = train_test_split(image_files, json_files, train_size=config['data']['train_split'], shuffle=True)
+        from datasets.ue1 import UE1Dataset
+        train_dataset = UE1Dataset(x_files=x_train, y_files=y_train, transform=transform['train'])
+        val_dataset = UE1Dataset(x_files=x_val, y_files=y_val, transform=transform['test'])
+        dataloaders = {
+            'train': DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True),
+            'val': DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
+        }
+        return dataloaders
     else:
         raise ValueError(f"Invalid dataset: {config['data']['dataset']}")
 
