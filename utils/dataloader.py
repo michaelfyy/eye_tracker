@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from datasets.dummy import DummyDataset
 from datasets.syntheseyes import SynthesEyesDataset
 from datasets.ue2 import UE2Dataset
+from datasets.ue2_multiview import UE2MultiviewDataset
 from datasets.transforms import get_transforms
 
 def load_data(config):
@@ -41,7 +42,6 @@ def load_data(config):
         return dataloaders
 
     elif config['data']['dataset'] == "ue2":
-        # Combined approach (existing)
         data_dir = config['data']['data_dir']
         image_files = []
         for f in os.listdir(data_dir):
@@ -62,7 +62,6 @@ def load_data(config):
         return dataloaders
 
     elif config['data']['dataset'] == "ue2_separate":
-        # New branch: group images by camera id
         data_dir = config['data']['data_dir']
         image_files = []
         for f in os.listdir(data_dir):
@@ -94,6 +93,24 @@ def load_data(config):
                 'val': DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
             }
         return dataloaders_dict
+
+    elif config['data']['dataset'] == "ue2_multiview":
+        data_dir = config['data']['data_dir']
+        json_files = []
+        for f in os.listdir(data_dir):
+            if f.lower().endswith('.json'):
+                json_files.append(os.path.join(data_dir, f))
+        # Assume filenames are like "1.json", "2.json", etc.
+        json_files = sorted(json_files, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+        train_jsons, val_jsons = train_test_split(json_files, train_size=config['data']['train_split'], shuffle=True)
+        train_dataset = UE2MultiviewDataset(json_files=train_jsons, img_dir=data_dir, transform=transform['train'])
+        val_dataset = UE2MultiviewDataset(json_files=val_jsons, img_dir=data_dir, transform=transform['test'])
+        dataloaders = {
+            'train': DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True),
+            'val': DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
+        }
+        return dataloaders
+
     elif config['data']['dataset'] == "ue1":
         data_dir = config['data']['data_dir']
         image_files = []

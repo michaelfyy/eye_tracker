@@ -1,0 +1,50 @@
+data:
+  dataset: "ue2_multiview"
+  data_dir: "C:/Users/michaelfeng/Documents/IML/data/10k_multiviewEER/imgs"
+  video_root: "C:/Users/michaelfeng/Documents/IML/data/EyeVideos"
+  annotations_folder: "annotations"
+  train_split: 0.75
+
+model: "multiview_efficientnet"
+
+training:
+  batch_size: 16
+  num_epochs: 50
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  early_stop: 10
+  from_checkpoint: False
+  checkpoint_path: ""
+
+logging:
+  run_dir: "runs"
+
+loss:
+  cam_1_2d:
+    type: "mse"
+    weight: 1.0
+  cam_2_2d:
+    type: "mse"
+    weight: 1.0
+  cam_3_2d:
+    type: "mse"
+    weight: 1.0
+  cam_4_2d:
+    type: "mse"
+    weight: 1.0
+  cam_1_3d:
+    type: "mse"
+    weight: 0.0
+  cam_2_3d:
+    type: "mse"
+    weight: 0.0
+  cam_3_3d:
+    type: "mse"
+    weight: 0.0
+  cam_4_3d:
+    type: "mse"
+    weight: 0.0
+
+testing:
+  checkpoint: "latest"
+  frame_rate: 30
