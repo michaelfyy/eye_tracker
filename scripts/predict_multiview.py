@@ -123,6 +123,22 @@ def predict_and_evaluate():
     video_paths = load_multiview_videos(video_root)
     logger.log({"message": "Multiview video paths loaded.", "video_paths": video_paths})
 
+    # Load annotations for each camera.
+    # Assume that config['data']['annotations_folder'] gives the folder where annotation XML files are stored.
+    # For each camera video (e.g. "e1.mp4" for cam_1), we look for an annotation file named "e1_annotations.xml".
+    sorted_cams = sorted(video_paths.keys())
+    annotations = {}
+    for cam in sorted_cams:
+        video_file = video_paths[cam]
+        video_name = os.path.splitext(os.path.basename(video_file))[0]
+        annot_file = os.path.join(video_root, config['data']['annotations_folder'], f"{video_name}_annotations.xml")
+        if os.path.exists(annot_file):
+            annotations[cam] = parse_annotations(annot_file)
+            logger.log({"message": f"Loaded annotations for {cam} from {annot_file}"})
+        else:
+            annotations[cam] = {}
+            logger.log({"message": f"No annotations found for {cam}."})
+
     # Extract frames for each camera (using extract_frames for proper RGB conversion).
     frames_dict = extract_multiview_frames(video_paths)
     # Synchronize: use the minimum frame count across cameras.
@@ -130,7 +146,6 @@ def predict_and_evaluate():
     logger.log({"message": f"Extracted {num_frames} synchronized frames per camera."})
 
     # Prepare multiview input tensor, record per-camera original sizes and original frames.
-    sorted_cams = sorted(video_paths.keys())  # e.g. ["cam_1", "cam_2", "cam_3", "cam_4"]
     multiview_samples = []  # List to collect per-frame multiview tensors.
     orig_sizes_per_view = {cam: [] for cam in sorted_cams}
     orig_frames_per_view = {cam: frames_dict[cam][:num_frames] for cam in sorted_cams}
@@ -166,34 +181,32 @@ def predict_and_evaluate():
                 "avg_time_per_frame_sec": avg_time_per_frame})
 
     # Expected prediction keys: e.g., "cam_1_2d", "cam_1_3d", ..., "cam_4_2d", "cam_4_3d"
-    output_keys = [f"{cam}_2d" for cam in sorted_cams] + [f"{cam}_3d" for cam in sorted_cams]
-
-    # --- Process 2D Predictions for Visualization ---
+    # Process 2D predictions for visualization.
     annotated_frames = {cam: [] for cam in sorted_cams}
-    per_frame_errors = {cam: [] for cam in sorted_cams}  # Will store error per frame if GT available
+    per_frame_errors = {cam: [] for cam in sorted_cams}  # Will store error per frame if GT exists
 
-    # For each frame and each camera, compute the inverse transform of the 2D prediction.
-    # (If GT is available, compute pixel error; otherwise, errors remain None.)
+    # For each frame and each camera, convert prediction from resized space to original image space
     for idx in range(num_frames):
         for cam in sorted_cams:
             pred_2d = predictions[f"{cam}_2d"][idx].cpu()
             orig_size = orig_sizes_per_view[cam][idx]
             pred_orig = inverse_transform_2d(pred_2d, orig_size, target_size=(224, 224))
             pred_orig_np = pred_orig.cpu().numpy()
-            # Load ground truth if available; for now, we set to None.
-            gt_point = None
-            annotated = annotate_frame(orig_frames_per_view[cam][idx], gt_point, pred_orig_np)
-            annotated_frames[cam].append(annotated)
-            # If GT were available, compute the error here.
-            if gt_point is not None:
-                error = np.linalg.norm(np.array(pred_orig_np) - np.array(gt_point))
+            # Check if annotations for this camera contain this frame.
+            if idx in annotations[cam]:
+                ann = annotations[cam][idx][0]
+                gt_point = ann[1]  # gt is expected to be in original image coordinates.
+                gt_tensor = torch.tensor(gt_point, dtype=torch.float)
+                error = torch.norm(pred_orig - gt_tensor, p=2).item()
                 per_frame_errors[cam].append(error)
             else:
                 per_frame_errors[cam].append(None)
+                gt_point = None
+            annotated = annotate_frame(orig_frames_per_view[cam][idx], gt_point, pred_orig_np)
+            annotated_frames[cam].append(annotated)
 
-    # --- Save Per-Camera Annotated Videos and Evaluation Plots ---
+    # Save per-camera annotated videos and evaluation plots.
     for cam in sorted_cams:
-        # Save annotated video.
         video_path = os.path.join(predictions_output_root, f"{cam}_annotated.mp4")
         if len(annotated_frames[cam]) > 0:
             height, width, _ = annotated_frames[cam][0].shape
@@ -203,20 +216,18 @@ def predict_and_evaluate():
                 out_video.write(frame)
             out_video.release()
             logger.log({"message": f"Annotated video saved for {cam}.", "video_path": video_path})
-        # Generate per-frame pixel error plot and histogram if errors exist.
         valid_errors = [e for e in per_frame_errors[cam] if e is not None]
         if valid_errors:
             plt.figure(figsize=(10, 5))
             plt.plot(range(num_frames), [e if e is not None else 0 for e in per_frame_errors[cam]], marker='o')
             plt.xlabel("Frame number")
-            plt.ylabel("Pixel error")
+            plt.ylabel("Pixel error (in original coordinates)")
             plt.title(f"Per-frame Pixel Error for {cam}")
             plt.grid(True)
             error_plot_path = os.path.join(predictions_output_root, f"{cam}_per_frame_pixel_error.png")
             plt.savefig(error_plot_path)
             plt.close()
             logger.log({"message": f"Pixel error plot saved for {cam}.", "plot_path": error_plot_path})
-            
             plt.figure(figsize=(8, 5))
             plt.hist(valid_errors, bins=20, edgecolor='black')
             plt.xlabel("Pixel error")
@@ -227,7 +238,7 @@ def predict_and_evaluate():
             plt.close()
             logger.log({"message": f"Pixel error histogram saved for {cam}.", "histogram_path": hist_path})
 
-    # --- Process 3D Predictions: Save Raw Outputs ---
+    # Process 3D predictions: save raw outputs.
     predictions_3d = {}
     for cam in sorted_cams:
         key = f"{cam}_3d"
@@ -237,7 +248,7 @@ def predict_and_evaluate():
         json.dump(predictions_3d, f, indent=4)
     logger.log({"message": "3D predictions saved.", "predictions_3d_path": predictions_3d_path})
 
-    # --- Create Overall Evaluation Metrics ---
+    # Create overall evaluation metrics.
     overall_evaluation = {
         "total_frames": num_frames,
         "total_inference_time_sec": total_inference_time,
