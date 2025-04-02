@@ -1,4 +1,4 @@
-# eye_tracker_2d_eval
+# eye_tracker
 
 **2D evaluation for eye tracking models on SynthesEyes and UnityEyes 2.**
 
@@ -7,18 +7,23 @@
 ### 🔧 Configuration
 
 Edit the following configuration files to specify paths to eye videos and datasets:
+
 - `configs/syntheseyes.yaml`
 - `configs/ue2.yaml`
 - `configs/ue2_separate.yaml`
 
 #### Windows
+
 Run the batch script:
+
 ```sh
 ./run.bat
 ```
 
 #### MacOS/Linux
+
 Run the shell script:
+
 ```sh
 ./run.sh
 ```
