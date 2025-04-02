@@ -47,7 +47,7 @@ def train():
     # Define the eight output keys.
     output_keys = [
         "cam_1_2d", "cam_2_2d",
-        "cam_3_2d", "cam_4_3d",
+        "cam_3_2d", "cam_4_2d",
         "cam_1_3d", "cam_2_3d",
         "cam_3_3d", "cam_4_3d"
     ]
