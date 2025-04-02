@@ -29,8 +29,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 def preprocess_frame(frame):
     """
     Preprocess a single frame:
-      - Assume the input frame is already in RGB (via extract_frames).
-      - Convert to tensor (C,H,W), resize to (224,224) and normalize.
+      - Assumes the frame is in RGB (extracted via extract_frames).
+      - Converts to tensor, permutes dimensions to (C, H, W), resizes to (224, 224) and normalizes.
     Returns:
       processed_frame: Tensor of shape (C, 224, 224)
       orig_size: Tuple (height, width)
@@ -50,7 +50,7 @@ def preprocess_frame(frame):
 
 def annotate_frame(orig_frame, gt_point, pred_point):
     """
-    Annotate a frame (in RGB) with the predicted and (optionally) ground truth 2D point.
+    Annotate an RGB frame with ground truth (if available) and predicted 2D point.
     The frame is converted to BGR for visualization.
     """
     frame_bgr = cv2.cvtColor(orig_frame, cv2.COLOR_RGB2BGR)
@@ -67,7 +67,7 @@ def annotate_frame(orig_frame, gt_point, pred_point):
 
 def get_camera_id_from_filename(filename):
     """
-    Given a video filename like "e1.mp4", return the corresponding camera id, e.g., "cam_1".
+    Given a video filename (e.g. "e1.mp4"), return the corresponding camera id (e.g. "cam_1").
     """
     base = os.path.splitext(os.path.basename(filename))[0]
     if base.startswith("e") and len(base) > 1:
@@ -78,7 +78,7 @@ def get_camera_id_from_filename(filename):
 def load_multiview_videos(video_root):
     """
     Scan the video_root folder for mp4 files and map them to camera ids.
-    Expects files named like "e1.mp4", "e2.mp4", etc.
+    Expects filenames like "e1.mp4", "e2.mp4", etc.
     Returns a dict mapping camera id to video path.
     """
     video_files = glob.glob(os.path.join(video_root, "*.mp4"))
@@ -93,8 +93,8 @@ def load_multiview_videos(video_root):
 
 def extract_multiview_frames(video_paths):
     """
-    For each camera, use the helper extract_frames to obtain a list of RGB frames.
-    Returns a dictionary mapping camera id to its list of frames.
+    For each camera video, use the helper extract_frames (which converts BGR to RGB)
+    and return a dictionary mapping camera id to list of frames.
     """
     frames_dict = {}
     for cam, path in video_paths.items():
@@ -104,9 +104,13 @@ def extract_multiview_frames(video_paths):
 
 def predict_and_evaluate():
     config = parse_args()
-    logger = Logger(os.path.join(config['logging']['run_dir'], "predictions"), config)
+    # Create a timestamped predictions output folder.
+    predictions_output_root = os.path.join(config['logging']['run_dir'], "predictions", datetime.now().strftime('%Y-%m-%d_%H-%M'))
+    os.makedirs(predictions_output_root, exist_ok=True)
+    # Create a logger that writes to this folder.
+    logger = Logger(predictions_output_root, config)
 
-    # Determine checkpoint: support "latest" option.
+    # Determine checkpoint (support "latest" option).
     if config['testing']['checkpoint'] == "latest":
         common_ckpt = os.path.join(config['logging']['run_dir'], f"latest_best_model_{config['data']['dataset']}.pt")
         if os.path.exists(common_ckpt):
@@ -119,15 +123,15 @@ def predict_and_evaluate():
     video_paths = load_multiview_videos(video_root)
     logger.log({"message": "Multiview video paths loaded.", "video_paths": video_paths})
 
-    # Extract frames for each camera using the helper (ensures proper color conversion).
+    # Extract frames for each camera (using extract_frames for proper RGB conversion).
     frames_dict = extract_multiview_frames(video_paths)
-    # Synchronize frames: use the minimum frame count across cameras.
+    # Synchronize: use the minimum frame count across cameras.
     num_frames = min(len(frames) for frames in frames_dict.values())
     logger.log({"message": f"Extracted {num_frames} synchronized frames per camera."})
 
-    # Prepare multiview input tensor and record per-camera original sizes and frames.
-    sorted_cams = sorted(video_paths.keys())  # e.g., ["cam_1", "cam_2", "cam_3", "cam_4"]
-    multiview_samples = []  # List of tensors, one per frame across cameras.
+    # Prepare multiview input tensor, record per-camera original sizes and original frames.
+    sorted_cams = sorted(video_paths.keys())  # e.g. ["cam_1", "cam_2", "cam_3", "cam_4"]
+    multiview_samples = []  # List to collect per-frame multiview tensors.
     orig_sizes_per_view = {cam: [] for cam in sorted_cams}
     orig_frames_per_view = {cam: frames_dict[cam][:num_frames] for cam in sorted_cams}
 
@@ -138,10 +142,9 @@ def predict_and_evaluate():
             proc_frame, orig_size = preprocess_frame(frame)
             sample_views.append(proc_frame)
             orig_sizes_per_view[cam].append(orig_size)
-        # Stack per view (resulting in tensor of shape (views, C, 224, 224)).
-        sample_tensor = torch.stack(sample_views, dim=0)
+        sample_tensor = torch.stack(sample_views, dim=0)  # (views, C, 224, 224)
         multiview_samples.append(sample_tensor)
-    # Create a batch tensor (N, views, C, H, W)
+    # Stack to create batch: (N, views, C, H, W)
     inputs = torch.stack(multiview_samples, dim=0).to(device)
     logger.log({"message": "Prepared multiview input tensor.", "input_shape": list(inputs.shape)})
 
@@ -162,50 +165,48 @@ def predict_and_evaluate():
                 "total_inference_time_sec": total_inference_time,
                 "avg_time_per_frame_sec": avg_time_per_frame})
 
-    # Expected prediction keys: "cam_1_2d", "cam_1_3d", ..., "cam_4_2d", "cam_4_3d"
+    # Expected prediction keys: e.g., "cam_1_2d", "cam_1_3d", ..., "cam_4_2d", "cam_4_3d"
     output_keys = [f"{cam}_2d" for cam in sorted_cams] + [f"{cam}_3d" for cam in sorted_cams]
 
-    # --- Process 2D predictions for visualization ---
+    # --- Process 2D Predictions for Visualization ---
     annotated_frames = {cam: [] for cam in sorted_cams}
-    per_frame_errors = {cam: [] for cam in sorted_cams}  # Optional: if GT available
+    per_frame_errors = {cam: [] for cam in sorted_cams}  # Will store error per frame if GT available
 
+    # For each frame and each camera, compute the inverse transform of the 2D prediction.
+    # (If GT is available, compute pixel error; otherwise, errors remain None.)
     for idx in range(num_frames):
         for cam in sorted_cams:
             pred_2d = predictions[f"{cam}_2d"][idx].cpu()
             orig_size = orig_sizes_per_view[cam][idx]
             pred_orig = inverse_transform_2d(pred_2d, orig_size, target_size=(224, 224))
             pred_orig_np = pred_orig.cpu().numpy()
-            # If ground truth is available, load it here; otherwise, set to None.
+            # Load ground truth if available; for now, we set to None.
             gt_point = None
-            # Annotate the original frame (from the helper, frames are in RGB)
-            orig_frame = orig_frames_per_view[cam][idx]
-            annotated = annotate_frame(orig_frame, gt_point, pred_orig_np)
+            annotated = annotate_frame(orig_frames_per_view[cam][idx], gt_point, pred_orig_np)
             annotated_frames[cam].append(annotated)
-            # Optionally compute pixel error if GT exists.
+            # If GT were available, compute the error here.
             if gt_point is not None:
                 error = np.linalg.norm(np.array(pred_orig_np) - np.array(gt_point))
                 per_frame_errors[cam].append(error)
             else:
                 per_frame_errors[cam].append(None)
 
-    # Save annotated videos and evaluation plots for each camera.
-    predictions_output_root = os.path.join(config['logging']['run_dir'], "predictions", datetime.now().strftime('%Y-%m-%d_%H-%M'))
-    os.makedirs(predictions_output_root, exist_ok=True)
+    # --- Save Per-Camera Annotated Videos and Evaluation Plots ---
     for cam in sorted_cams:
+        # Save annotated video.
         video_path = os.path.join(predictions_output_root, f"{cam}_annotated.mp4")
-        if len(annotated_frames[cam]) == 0:
-            continue
-        height, width, _ = annotated_frames[cam][0].shape
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out_video = cv2.VideoWriter(video_path, fourcc, config['testing'].get('frame_rate', 30), (width, height))
-        for frame in annotated_frames[cam]:
-            out_video.write(frame)
-        out_video.release()
-        logger.log({"message": f"Annotated video saved for {cam}.", "video_path": video_path})
-
+        if len(annotated_frames[cam]) > 0:
+            height, width, _ = annotated_frames[cam][0].shape
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out_video = cv2.VideoWriter(video_path, fourcc, config['testing'].get('frame_rate', 30), (width, height))
+            for frame in annotated_frames[cam]:
+                out_video.write(frame)
+            out_video.release()
+            logger.log({"message": f"Annotated video saved for {cam}.", "video_path": video_path})
+        # Generate per-frame pixel error plot and histogram if errors exist.
         valid_errors = [e for e in per_frame_errors[cam] if e is not None]
         if valid_errors:
-            plt.figure(figsize=(10,5))
+            plt.figure(figsize=(10, 5))
             plt.plot(range(num_frames), [e if e is not None else 0 for e in per_frame_errors[cam]], marker='o')
             plt.xlabel("Frame number")
             plt.ylabel("Pixel error")
@@ -215,7 +216,8 @@ def predict_and_evaluate():
             plt.savefig(error_plot_path)
             plt.close()
             logger.log({"message": f"Pixel error plot saved for {cam}.", "plot_path": error_plot_path})
-            plt.figure(figsize=(8,5))
+            
+            plt.figure(figsize=(8, 5))
             plt.hist(valid_errors, bins=20, edgecolor='black')
             plt.xlabel("Pixel error")
             plt.ylabel("Frequency")
@@ -225,7 +227,7 @@ def predict_and_evaluate():
             plt.close()
             logger.log({"message": f"Pixel error histogram saved for {cam}.", "histogram_path": hist_path})
 
-    # --- Process 3D predictions: Save raw outputs ---
+    # --- Process 3D Predictions: Save Raw Outputs ---
     predictions_3d = {}
     for cam in sorted_cams:
         key = f"{cam}_3d"
@@ -235,16 +237,26 @@ def predict_and_evaluate():
         json.dump(predictions_3d, f, indent=4)
     logger.log({"message": "3D predictions saved.", "predictions_3d_path": predictions_3d_path})
 
-    # Save overall evaluation results.
-    evaluation_results = {
+    # --- Create Overall Evaluation Metrics ---
+    overall_evaluation = {
         "total_frames": num_frames,
         "total_inference_time_sec": total_inference_time,
         "avg_time_per_frame_sec": avg_time_per_frame,
+        "checkpoint_used": checkpoint_path,
+        "per_camera": {}
     }
-    evaluation_results_path = os.path.join(predictions_output_root, "evaluation_results.json")
-    with open(evaluation_results_path, "w") as f:
-        json.dump(evaluation_results, f, indent=4)
-    logger.log({"message": "Overall evaluation results saved.", "results_path": evaluation_results_path})
+    for cam in sorted_cams:
+        cam_errors = [e for e in per_frame_errors[cam] if e is not None]
+        avg_error = float(np.mean(cam_errors)) if cam_errors else None
+        overall_evaluation["per_camera"][cam] = {
+            "average_pixel_error": avg_error,
+            "frame_pixel_errors": per_frame_errors[cam]
+        }
+    overall_evaluation_path = os.path.join(predictions_output_root, "overall_evaluation.json")
+    with open(overall_evaluation_path, "w") as f:
+        json.dump(overall_evaluation, f, indent=4)
+    logger.log({"message": "Overall evaluation results saved.", "results_path": overall_evaluation_path})
+
     print("Multiview prediction complete. Results saved to", predictions_output_root)
 
 if __name__ == "__main__":
