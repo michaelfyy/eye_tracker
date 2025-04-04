@@ -5,7 +5,7 @@ data:
   annotations_folder: "annotations"
   train_split: 0.75
 
-model: "multiview_efficientnet"
+model: "multiview_efficientnet_sb"
 
 training:
   batch_size: 16
